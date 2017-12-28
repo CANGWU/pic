@@ -104,7 +104,7 @@
 	}
 
 #### ThreadLocalSecurityHolderStrategy
-   `ThreadLocalSecurityHolderStrategy`是`SecutityContextHolderStrategy`的默认实现，主要通过`ThreadLocal`将`SecurityContext`与线程进行绑定，该类位于`org.springframework.security.core.context`包中
+   `ThreadLocalSecurityHolderStrategy`是`SecutityContextHolderStrategy`的默认实现，主要通过`ThreadLocal`将`SecurityContext`与线程进行绑定，其他实现还有`GlobalSecurityContextHolderStrategy`和`InheritableThreadLocalSecurityHolderStrategy`该类位于`org.springframework.security.core.context`包中
 
 	final class ThreadLocalSecurityContextHolderStrategy implements
 	
