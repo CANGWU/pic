@@ -137,6 +137,134 @@
  
    下面附上一张类图方便理解
    
+   ![](https://raw.githubusercontent.com/CANGWU/pic/master/book/spring-security/SecurityContext.png)
+
+
+### ProviderManager
+`ProviderManager`是AuthenticationManager的默认实现，这里有一个委托者模式的实现，它持有按照顺序排列的一个List的`AuthenticationProvider`。在`ProviderManager.authenticate(Authentication)`方法中通过循环的方式调用`AuthenticationProvider.authenticate(Authentication)`对传递的`Authentication`进行尝试认证，当List中有一个`AuthenticationProvider`对`Authentication`的认证返回一个非空的`AuthenticationProvider`并且无异常抛出，说明该`AuthenticationProvider`有能力对传递的`Authentication`进行认证并且认证成功，调用链下游的`AuthenticationProvider`将不需要继续尝试。同时在尝试认证的过程中会对上次认证产生的`AuthenticationException`进行保存，当没有`AuthenticationProvider`返回非空的`Authentication`,最后一次遗留的`AuthencationException`将会被使用。如果List中的`AuthenticationProvider`都不能对`Authentication`进行认证，那么`parent`(`AuthenticationManager`)(当`parent非空时`)将尝试进行认证。当然如果`parent`都无法返回非空的`Authentication`，那么一个`ProviderNotFoundException`将会被抛出。在获取到有效的认证结果`Authentication`, 一个必要的清理工作需要进行，例如清理`Authentication`中的`Credentials`(密码)。这个过程中还有认证成功或者认证失败的事件广播，但是默认的实现是空的
+`ProviderManager`中的关键的引用对象。该类位于`org.springframework.security.authentication`包中
+	
+	//认证事件广播，默认实现为空
+	private AuthenticationEventPublisher eventPublisher = new NullEventPublisher();
+	//认证AuthenticationProvider列表，认证的主要提供者
+	private List<AuthenticationProvider> providers = Collections.emptyList();
+	//父级AuthenticationManager，在AuthenticationProvider列表尝试认证失败后调用
+	private AuthenticationManager parent;
+	
+`ProviderManager.authenticate(Authentication)`方法
+	
+	public Authentication authenticate(Authentication authentication) throws AuthenticationException {
+		Class<? extends Authentication> toTest = authentication.getClass();
+		AuthenticationException lastException = null;
+		Authentication result = null;
+		boolean debug = logger.isDebugEnabled();
+
+		//循环调用AuthenticationProvider尝试对Authentication进行认证
+		for (AuthenticationProvider provider : getProviders()) {
+			//检查AuthenticationProvider是否支持对该类Authentication进行认证，
+			//如果不支持，则进入下一个循环
+			if (!provider.supports(toTest)) {
+				continue;
+			}
+
+			if (debug) {
+				logger.debug("Authentication attempt using "
+						+ provider.getClass().getName());
+			}
+
+			//注意在循环调用的过程中，如果没有认证成功，只有最后一次的捕捉的异常有效
+			try {
+				result = provider.authenticate(authentication);
+
+				if (result != null) {
+					copyDetails(authentication, result);
+					break;
+				}
+			}
+			catch (AccountStatusException e) {
+				prepareException(e, authentication);
+				// SEC-546: Avoid polling additional providers if auth failure is due to
+			   // invalid account status
+				throw e;
+			}
+			catch (InternalAuthenticationServiceException e) {
+				prepareException(e, authentication);
+				throw e;
+			}
+			catch (AuthenticationException e) {
+				lastException = e;
+			}
+		}
+
+		//在AuthenticationProvider列表尝试认证失败后尝试调用parent进行认证
+		if (result == null && parent != null) {
+			// Allow the parent to try.
+			try {
+				result = parent.authenticate(authentication);
+			}
+			catch (ProviderNotFoundException e) {
+			// ignore as we will throw below if no other exception occurred prior to
+			// calling parent and the parent
+			// may throw ProviderNotFound even though a provider in the child already
+			// handled the request
+			}
+			catch (AuthenticationException e) {
+				lastException = e;
+			}
+		}
+		//认证成功后的清理操作或者其他操作
+		if (result != null) {
+			if (eraseCredentialsAfterAuthentication
+					&& (result instanceof CredentialsContainer)) {
+				// Authentication is complete. Remove credentials and other secret data
+				// from authentication
+				((CredentialsContainer) result).eraseCredentials();
+			}
+			//认证成功的事件广播
+			eventPublisher.publishAuthenticationSuccess(result);
+			return result;
+		}
+
+		// Parent was null, or didn't authenticate (or throw an exception).
+		//认证失败的抛出最后一次保留的异常
+		if (lastException == null) {
+			lastException = new ProviderNotFoundException(messages.getMessage(
+					"ProviderManager.providerNotFound",
+					new Object[] { toTest.getName() },
+					"No AuthenticationProvider found for {0}"));
+		}
+       //这里的方法进行了认证失败的广播
+		prepareException(lastException, authentication);
+
+		throw lastException;
+	}
+		
+	private void prepareException(AuthenticationException ex, Authentication auth) {
+		eventPublisher.publishAuthenticationFailure(ex, auth);
+	}
+	
+### AuthenticationProvider
+   `AuthenticationProvider`是真正进行认证的工作的接口类，通过注入不同的排列组合的`AuthenticationProvider`实现，使得`ProviderManager`可以针对不同的请求进行高配置化的认证。
+   
+	public interface AuthenticationProvider {
+	   //执行认证的具体方法
+	   //通常会返回一个带有credentials的被认证的Authentication
+	   //也可能返回null，当不支持认证传递过来的Authentication，然后下一个AuthenticationProvider会在ProviderManager被调用
+	   //认证失败会抛出AuthenticationException
+		Authentication authenticate(Authentication authentication) throws AuthenticationException;
+		//返回该AuthenticationProvider是否支持认证该Authentication类型
+		//然而返回true也不能保证一定能进行认证，authenticate方法依然有可能会返回null
+		boolean supports(Class<?> authentication);
+}
+
+
+   下面附上一张类图方便理解
+   
+   ![](https://raw.githubusercontent.com/CANGWU/pic/master/book/spring-security/SecurityContext.png)
+
+
+
+
 
 
 	
