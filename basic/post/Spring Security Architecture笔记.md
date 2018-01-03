@@ -460,6 +460,9 @@
    ![](https://raw.githubusercontent.com/CANGWU/pic/master/book/spring-security/ProviderManager.png)
    
    附上一张官方给出的总体Authentication结构图
+   
+   ![](https://raw.githubusercontent.com/CANGWU/pic/master/book/spring-security/Authentication.png)
+
 
 
 
