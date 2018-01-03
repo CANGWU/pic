@@ -141,9 +141,9 @@
 
 
 ### ProviderManager
-`ProviderManager`是AuthenticationManager的默认实现，这里有一个委托者模式的实现，它持有按照顺序排列的一个List的`AuthenticationProvider`。在`ProviderManager.authenticate(Authentication)`方法中通过循环的方式调用`AuthenticationProvider.authenticate(Authentication)`对传递的`Authentication`进行尝试认证，当List中有一个`AuthenticationProvider`对`Authentication`的认证返回一个非空的`AuthenticationProvider`并且无异常抛出，说明该`AuthenticationProvider`有能力对传递的`Authentication`进行认证并且认证成功，调用链下游的`AuthenticationProvider`将不需要继续尝试。同时在尝试认证的过程中会对上次认证产生的`AuthenticationException`进行保存，当没有`AuthenticationProvider`返回非空的`Authentication`,最后一次遗留的`AuthencationException`将会被使用。如果List中的`AuthenticationProvider`都不能对`Authentication`进行认证，那么`parent`(`AuthenticationManager`)(当`parent非空时`)将尝试进行认证。当然如果`parent`都无法返回非空的`Authentication`，那么一个`ProviderNotFoundException`将会被抛出。在获取到有效的认证结果`Authentication`, 一个必要的清理工作需要进行，例如清理`Authentication`中的`Credentials`(密码)。这个过程中还有认证成功或者认证失败的事件广播，但是默认的实现是空的
-`ProviderManager`中的关键的引用对象。该类位于`org.springframework.security.authentication`包中
-	
+`ProviderManager`是AuthenticationManager的默认实现，这里有一个委托者模式的实现，它持有按照顺序排列的一个List的`AuthenticationProvider`。在`ProviderManager.authenticate(Authentication)`方法中通过循环的方式调用`AuthenticationProvider.authenticate(Authentication)`对传递的`Authentication`进行尝试认证，当List中有一个`AuthenticationProvider`对`Authentication`的认证返回一个非空的`AuthenticationProvider`并且无异常抛出，说明该`AuthenticationProvider`有能力对传递的`Authentication`进行认证并且认证成功，调用链下游的`AuthenticationProvider`将不需要继续尝试。同时在尝试认证的过程中会对上次认证产生的`AuthenticationException`进行保存，当没有`AuthenticationProvider`返回非空的`Authentication`,最后一次遗留的`AuthencationException`将会被使用。如果List中的`AuthenticationProvider`都不能对`Authentication`进行认证，那么`parent`(`AuthenticationManager`)(当`parent非空时`)将尝试进行认证。当然如果`parent`都无法返回非空的`Authentication`，那么一个`ProviderNotFoundException`将会被抛出。在获取到有效的认证结果`Authentication`, 一个必要的清理工作需要进行，例如清理`Authentication`中的`Credentials`(密码)。这个过程中还有认证成功或者认证失败的事件广播，但是默认的实现是空的，该类位于`org.springframework.security.authentication`包中
+`ProviderManager`中的关键的引用对象。	
+
 	//认证事件广播，默认实现为空
 	private AuthenticationEventPublisher eventPublisher = new NullEventPublisher();
 	//认证AuthenticationProvider列表，认证的主要提供者
@@ -257,10 +257,209 @@
 		boolean supports(Class<?> authentication);
 }
 
+#### AbstractUserDetailsAuthenticationProvider
+`AbstractUserDetailsAuthenticationProvider`是一个抽象类，继承了`AuthenticationProvider`，作为一个与`UserDetails`工作的基类。这个类被设计用来返回`UsernamePasswordAuthenticationToken`(`Authentication`的一个子类)，往下一点会介绍一下`UserDetails`和`Authentication`区别，这里可以简单认为`UserDetails`是提供系统内部持有的真正正确的用户信息的接口，`Authentication`是提供外来认证信息以及经认证后填充(来自`UserDetail`)的用户信息。该类位于`org.springframework.security.authentication.dao`包中
+`AbstractUserDetailsAuthenticationProvider`关键对象引用
 
+	//用户信息缓存，默认实现为null，因为通常在一个Web应用中，SecurityContext一般会保存在用户的session中
+	//并且当Authentication.isAuthenticated为true并不需要在每次的请求都要重新认证
+	private UserCache userCache = new NullUserCache();
+	//认证前置处理
+	private UserDetailsChecker preAuthenticationChecks = new DefaultPreAuthenticationChecks();
+	//认证后置处理
+	private UserDetailsChecker postAuthenticationChecks = new DefaultPostAuthenticationChecks();
+	//权限匹配注入了，用于认证成功后为UsernamePasswordAuthenticationToken注入对应的GrantedAuthority
+	private GrantedAuthoritiesMapper authoritiesMapper = new NullAuthoritiesMapper();
+	
+	
+`AbstractUserDetailsAuthenticationProvider.authenticate(Authentication)`方法
+	
+	public Authentication authenticate(Authentication authentication)throws AuthenticationException {
+	   //支持UsernamePasswordAuthenticationToken的认证
+		Assert.isInstanceOf(UsernamePasswordAuthenticationToken.class, authentication,
+				messages.getMessage(
+						"AbstractUserDetailsAuthenticationProvider.onlySupports",
+						"Only UsernamePasswordAuthenticationToken is supported"));
+
+		// Determine username
+		String username = (authentication.getPrincipal() == null) ? "NONE_PROVIDED"
+				: authentication.getName();
+				
+       //尝试从缓存中获取用户信息
+		boolean cacheWasUsed = true;
+		UserDetails user = this.userCache.getUserFromCache(username);
+
+		if (user == null) {
+			cacheWasUsed = false;
+
+			try {
+			   //缓存中没有用户时，尝试从用户信息的来源获取，一般是数据库
+				user = retrieveUser(username,
+						(UsernamePasswordAuthenticationToken) authentication);
+			}
+			catch (UsernameNotFoundException notFound) {
+				logger.debug("User '" + username + "' not found");
+
+				if (hideUserNotFoundExceptions) {
+					throw new BadCredentialsException(messages.getMessage(
+							"AbstractUserDetailsAuthenticationProvider.badCredentials",
+							"Bad credentials"));
+				}
+				else {
+					throw notFound;
+				}
+			}
+          //认证后返回的user为null，说明用户不存在，认证失败
+			Assert.notNull(user,
+					"retrieveUser returned null - a violation of the interface contract");
+		}
+
+		try {
+		   //认证前置处理
+			preAuthenticationChecks.check(user);
+			//该方法为抽象方法，可以在子类中添加自定义的认证处理工作，一般是对比密码之类的
+			additionalAuthenticationChecks(user,
+					(UsernamePasswordAuthenticationToken) authentication);
+		}
+		catch (AuthenticationException exception) {
+			if (cacheWasUsed) {
+				// There was a problem, so try again after checking
+				// we're using latest data (i.e. not from the cache)
+				cacheWasUsed = false;
+				user = retrieveUser(username,
+						(UsernamePasswordAuthenticationToken) authentication);
+				preAuthenticationChecks.check(user);
+				additionalAuthenticationChecks(user,
+						(UsernamePasswordAuthenticationToken) authentication);
+			}
+			else {
+				throw exception;
+			}
+		}
+
+       //认证后置处理
+		postAuthenticationChecks.check(user);
+       //如果缓存中没有该UserDetails，将其放进缓存
+		if (!cacheWasUsed) {
+			this.userCache.putUserInCache(user);
+		}
+
+		Object principalToReturn = user;
+
+		if (forcePrincipalAsString) {
+			principalToReturn = user.getUsername();
+		}
+       //返回认证成功的UsernamePasswordAuthenticationToken
+		return createSuccessAuthentication(principalToReturn, authentication, user);
+	}
+	
+	protected Authentication createSuccessAuthentication(Object principal,
+			Authentication authentication, UserDetails user) {
+	   //返回一些必要的信息，并且设置isAuthenticated为true
+		UsernamePasswordAuthenticationToken result = new UsernamePasswordAuthenticationToken(
+				principal, authentication.getCredentials(),
+				authoritiesMapper.mapAuthorities(user.getAuthorities()));
+		result.setDetails(authentication.getDetails());
+
+		return result;
+	}
+`UsernamePasswordAuthenticationToken`中只在`AuthenticationManager`或者`AuthenticationProvider`的子类中使用的用来生成可信赖的`Authentication`的构造器
+
+	public UsernamePasswordAuthenticationToken(Object principal, Object credentials,
+			Collection<? extends GrantedAuthority> authorities) {
+		super(authorities);
+		this.principal = principal;
+		this.credentials = credentials;
+		super.setAuthenticated(true); // must use super, as we override
+	}
+	
+
+#### DaoAuthenticationProvider
+`DaoAuthenticationProvider`是`AbstractUserDetailsAuthenticationProvider`的实现类，这是最常用的一个`AuthenticationProvider`，顾名思义，主要通过数据层进行用户信息认证的(一般是数据库)，这个类中主要关注`additionalAuthenticationChecks`和`retrieveUser`方法。该类位于`org.springframework.security.authentication.dao`
+	
+	public class DaoAuthenticationProvider extends AbstractUserDetailsAuthenticationProvider {
+       //密码的编码器，其实类似于加盐转义之类的密码加密解密器
+		private PasswordEncoder passwordEncoder;
+		//用于实现获取UserDetails的具体类
+		private UserDetailsService userDetailsService;
+
+		public DaoAuthenticationProvider() {
+			setPasswordEncoder(PasswordEncoderFactories.createDelegatingPasswordEncoder());
+		}
+
+		protected void additionalAuthenticationChecks(UserDetails userDetails,
+			UsernamePasswordAuthenticationToken authentication)
+			throws AuthenticationException {
+			if (authentication.getCredentials() == null) {
+				logger.debug("Authentication failed: no credentials provided");
+
+				throw new BadCredentialsException(messages.getMessage(
+					"AbstractUserDetailsAuthenticationProvider.badCredentials",
+					"Bad credentials"));
+			}
+
+			String presentedPassword = authentication.getCredentials().toString();
+       	//对比UserDetails中的密码和Authentication中的密码的
+       	//如果相同则认证成功，反之，认证失败，抛出认证证书错误的BadCredentialsException的异常
+       	//一般是比较转义后的密码
+			if (!passwordEncoder.matches(presentedPassword, userDetails.getPassword())) {
+				logger.debug("Authentication failed: password does not match stored value");
+
+				throw new BadCredentialsException(messages.getMessage(
+					"AbstractUserDetailsAuthenticationProvider.badCredentials",
+					"Bad credentials"));
+			}
+		}
+
+
+		//这个方法其实就是通过UserDetailsService.loadUserByUsername(username)根据用户名获取用户信息
+		//如果loadedUser不存在，抛出UsernameNotFoundException的异常
+		//UserDetailsService需要具体的实现，一般都是查询数据库
+		protected final UserDetails retrieveUser(String username,
+				UsernamePasswordAuthenticationToken authentication)
+				throws AuthenticationException {
+			UserDetails loadedUser;
+
+			try {
+				loadedUser = this.getUserDetailsService().loadUserByUsername(username);
+			}
+			catch (UsernameNotFoundException notFound) {
+				if (authentication.getCredentials() != null) {
+					String presentedPassword = authentication.getCredentials().toString();
+					passwordEncoder.matches(presentedPassword, userNotFoundEncodedPassword);
+				}
+				throw notFound;
+			}
+			catch (Exception repositoryProblem) {
+				throw new InternalAuthenticationServiceException(
+						repositoryProblem.getMessage(), repositoryProblem);
+			}
+
+			if (loadedUser == null) {
+				throw new InternalAuthenticationServiceException(
+						"UserDetailsService returned null, which is an interface contract violation");
+			}
+			return loadedUser;
+		}
+		
+		.....
+
+	}
+	
+`UserDetailsService`的接口需要由我们自主实现，然后注入到`DaoAuthenticationProvider`中使用
+
+
+	public interface UserDetailsService {
+	   //根据用户名获取用户信息
+		UserDetails loadUserByUsername(String username) throws UsernameNotFoundException;
+	}
+	
+`DaoAuthenticationProvider`的认证思路很简单，概括来说就是，用户提交用户名和密码，被封装成`UsernamePasswordAuthenticationToken`，`DaoAuthenticationProvider`在`retrieveUser`方法通过`UserDetailsService`根据用户名获取`UserDetails`，然后在`additionalAuthenticationChecks`方法中将`UserDetails`和`UsernamePasswordAuthenticationToken`的密码进行对比，然后返回结果
    下面附上一张类图方便理解
    
-   ![](https://raw.githubusercontent.com/CANGWU/pic/master/book/spring-security/SecurityContext.png)
+   ![](https://raw.githubusercontent.com/CANGWU/pic/master/book/spring-security/ProviderManager.png)
+   
+   附上一张官方给出的总体Authentication结构图
 
 
 
